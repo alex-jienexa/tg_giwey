@@ -1,0 +1,14 @@
+# Секреты и конфигурация
+.env
+
+# База данных
+*.db
+*.sqlite
+*.sqlite3
+
+# Python / Виртуальное окружение
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
