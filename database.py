@@ -1,18 +1,26 @@
 import aiosqlite
 import secrets
+from datetime import datetime
 from config import DB_PATH
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
+        # Таблица розыгрышей (id сделан TEXT для сохранения hex-строк)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS giveaways (
                 id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                channel_id TEXT NOT NULL,
+                creator_id INTEGER,
+                channel_id TEXT,
+                title TEXT,
+                description TEXT,
+                end_time TEXT,
+                winners_count INTEGER,
                 is_active INTEGER DEFAULT 1,
-                winner_id INTEGER
+                winner_ids TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Таблица участников
         await db.execute("""
             CREATE TABLE IF NOT EXISTS participants (
                 giveaway_id TEXT,
@@ -24,14 +32,17 @@ async def init_db():
         await db.commit()
 
 def generate_hex_id() -> str:
+    """Генерация уникального 12-значного HEX ID"""
     return secrets.token_hex(6)
 
-async def create_giveaway(title: str, channel_id: str, custom_id: str = None) -> str:
-    giveaway_id = custom_id if custom_id else generate_hex_id()
+async def create_giveaway(creator_id: int, title: str, channel_id: str, winners_count: int, end_time: str) -> str:
+    giveaway_id = generate_hex_id()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO giveaways (id, title, channel_id) VALUES (?, ?, ?)",
-            (giveaway_id, title, channel_id)
+            """INSERT INTO giveaways 
+               (id, creator_id, title, channel_id, winners_count, end_time, is_active) 
+               VALUES (?, ?, ?, ?, ?, ?, 1)""",
+            (giveaway_id, creator_id, title, str(channel_id), winners_count, end_time)
         )
         await db.commit()
     return giveaway_id
@@ -57,18 +68,18 @@ async def get_participants(giveaway_id: str) -> list[int]:
             rows = await cursor.fetchall()
             return [row[0] for row in rows]
 
-async def close_giveaway(giveaway_id: str, winner_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "UPDATE giveaways SET is_active = 0, winner_id = ? WHERE id = ?",
-            (winner_id, giveaway_id)
-        )
-        await db.commit()
-
 async def get_giveaway(giveaway_id: str):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id, title, channel_id, is_active, winner_id FROM giveaways WHERE id = ?",
+            "SELECT id, creator_id, title, channel_id, winners_count, end_time, is_active, winner_ids FROM giveaways WHERE id = ?",
             (giveaway_id,)
         ) as cursor:
             return await cursor.fetchone()
+
+async def close_giveaway(giveaway_id: str, winner_ids: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE giveaways SET is_active = 0, winner_ids = ? WHERE id = ?",
+            (winner_ids, giveaway_id)
+        )
+        await db.commit()
