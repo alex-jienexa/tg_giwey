@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 from database import create_giveaway, get_giveaway, get_participants, close_giveaway, get_user_channels, save_channel, delete_channel
-from keyboards import get_channels_keyboard, get_channel_detail_keyboard, get_manage_channels_keyboard
+from keyboards import get_channels_keyboard, get_channel_detail_keyboard, get_manage_channels_keyboard, get_cancel_inline_keyboard
 from states import CreateGiveawayForm, ChannelManageFS
 
 admin_router = Router()
@@ -19,6 +19,32 @@ def get_management_keyboard(giveaway_id: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="ℹ️ Информация о розыгрыше", callback_data=f"manage_info_{giveaway_id}")],
         [InlineKeyboardButton(text="🛑 Завершить досрочно", callback_data=f"manage_finish_{giveaway_id}")]
     ])
+
+# Отмена всех FSM-состояний
+@admin_router.message(F.text.in_({"❌ Отмена", "/cancel"}))
+async def process_cancel_message(message: Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer("Нечего отменять.", reply_markup=ReplyKeyboardRemove())
+        return
+
+    await state.clear()
+    await message.answer(
+        "🚫 Действие отменено.", 
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+@admin_router.callback_query(F.data == "cancel_fsm")
+async def process_cancel_callback(callback: CallbackQuery, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await callback.answer("Действие уже отменено или неактивно.")
+        return
+
+    await state.clear()
+    await callback.message.edit_text("🚫 Действие отменено.")
+    await callback.answer()
+
 
 @admin_router.message(Command("create_giveaway_test"))
 async def start_creation(message: Message, state: FSMContext):
@@ -37,7 +63,8 @@ async def start_creation(message: Message, state: FSMContext):
             "🛠 **Мастер создания розыгрыша**\n\n"
             "Шаг 1: Отправьте **@username** или **ID** вашего канала (например, `@my_test_channel` или `-100123456789`).\n"
             "⚠️ *Убедитесь, что бот предварительно добавлен в этот канал администратором!*",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=get_cancel_inline_keyboard()
         )
         await state.set_state(CreateGiveawayForm.input_channel_manually)
 
@@ -74,9 +101,10 @@ async def on_channel_selected(callback: CallbackQuery, state: FSMContext, bot: B
         await callback.message.edit_text(
             f"✅ Канал **{chat.title}** выбран!\n\n"
             f"Шаг 2: Введите **название розыгрыша**:",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            reply_markup=get_cancel_inline_keyboard()
         )
-        await state.set_state(GiveawayFS.title)
+        await state.set_state(CreateGiveawayForm.enter_title)
     except TelegramBadRequest:
         await callback.answer("❌ Бот был удален из этого канала или нет прав!", show_alert=True)
 
@@ -89,7 +117,7 @@ async def process_channel(message: Message, state: FSMContext, bot: Bot):
         chat = await bot.get_chat(channel_id)
         bot_member = await bot.get_chat_member(chat_id=chat.id, user_id=bot.id)
         if bot_member.status not in ["administrator", "creator"]:
-            await message.answer("❌ Бот находится в канале, но не имеет прав администратора. Выдайте права админа и попробуйте снова.", parse_mode="Markdown")
+            await message.answer("❌ Бот находится в канале, но не имеет прав администратора. Выдайте права админа и попробуйте снова.", parse_mode="Markdown", reply_markup=get_cancel_inline_keyboard())
             return
         # Сохраняем канал в базу данных для этого пользователя
         await save_channel(
@@ -98,28 +126,28 @@ async def process_channel(message: Message, state: FSMContext, bot: Bot):
             title=chat.title
         )
     except TelegramBadRequest:
-        await message.answer("❌ Не удалось найти канал или бот в него не добавлен. Проверьте адрес и повторите ввод:", parse_mode="Markdown")
+        await message.answer("❌ Не удалось найти канал или бот в него не добавлен. Проверьте адрес и повторите ввод:", parse_mode="Markdown", reply_markup=get_cancel_inline_keyboard())
         return
 
     await state.update_data(channel_id=str(chat.id), channel_title=chat.title)
     await state.set_state(CreateGiveawayForm.enter_title)
-    await message.answer(f"✅ Канал **{chat.title}** подтвержден!\n\nШаг 2: Введите **название розыгрыша**:", parse_mode="Markdown")
+    await message.answer(f"✅ Канал **{chat.title}** подтвержден!\n\nШаг 2: Введите **название розыгрыша**:", parse_mode="Markdown", reply_markup=get_cancel_inline_keyboard())
 
 @admin_router.message(CreateGiveawayForm.enter_title)
 async def process_title(message: Message, state: FSMContext):
     await state.update_data(title=message.text.strip())
     await state.set_state(CreateGiveawayForm.enter_winners_count)
-    await message.answer("Шаг 3: Введите **количество призовых мест (победителей)** (целое число):", parse_mode="Markdown")
+    await message.answer("Шаг 3: Введите **количество призовых мест (победителей)** (целое число):", parse_mode="Markdown", reply_markup=get_cancel_inline_keyboard())
 
 @admin_router.message(CreateGiveawayForm.enter_winners_count)
 async def process_winners(message: Message, state: FSMContext):
     if not message.text.isdigit() or int(message.text) <= 0:
-        await message.answer("❌ Пожалуйста, введите корректное положительное число.", parse_mode="Markdown")
+        await message.answer("❌ Пожалуйста, введите корректное положительное число.", parse_mode="Markdown", reply_markup=get_cancel_inline_keyboard())
         return
     
     await state.update_data(winners_count=int(message.text))
     await state.set_state(CreateGiveawayForm.enter_end_time)
-    await message.answer("Шаг 4: Введите **срок проведения** (например: `24 часа`, `3 дня` или конкретную дату `30.09.2026`):", parse_mode="Markdown")
+    await message.answer("Шаг 4: Введите **срок проведения** (например: `24 часа`, `3 дня` или конкретную дату `30.09.2026`):", parse_mode="Markdown", reply_markup=get_cancel_inline_keyboard())
 
 @admin_router.message(CreateGiveawayForm.enter_end_time)
 async def process_end_time(message: Message, state: FSMContext, bot: Bot):

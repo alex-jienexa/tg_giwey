@@ -16,6 +16,10 @@ def get_channels_keyboard(channels: list[dict]) -> InlineKeyboardMarkup:
         text="➕ Добавить новый канал", 
         callback_data="add_new_channel"
     )
+    builder.button(
+        text="❌ Отмена",
+        callback_data="cancel_fsm"
+    )
     
     # Выравниваем сохраненные каналы по 1 в ряд
     builder.adjust(1)
@@ -42,4 +46,17 @@ def get_channel_detail_keyboard(channel_id: str) -> InlineKeyboardMarkup:
     builder.button(text="❌ Удалить из списка", callback_data=f"delete_ch:{channel_id}")
     builder.button(text="🔙 Назад к списку", callback_data="back_to_channels")
     builder.adjust(1)
+    return builder.as_markup()
+
+def get_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[InlineKeyboardButton(text="❌ Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+# Inline-кнопка отмены (для сообщений с выбором из списка)
+def get_cancel_inline_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data="cancel_fsm")
     return builder.as_markup()
