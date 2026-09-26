@@ -6,3 +6,6 @@ class CreateGiveawayForm(StatesGroup):
     enter_title = State()
     enter_winners_count = State()
     enter_end_time = State()
+
+class ChannelManageFS(StatesGroup):
+    waiting_for_channel = State()

@@ -6,9 +6,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from database import create_giveaway, get_giveaway, get_participants, close_giveaway, get_user_channels, save_channel
-from keyboards import get_channels_keyboard
-from states import CreateGiveawayForm
+from database import create_giveaway, get_giveaway, get_participants, close_giveaway, get_user_channels, save_channel, delete_channel
+from keyboards import get_channels_keyboard, get_channel_detail_keyboard, get_manage_channels_keyboard
+from states import CreateGiveawayForm, ChannelManageFS
 
 admin_router = Router()
 
@@ -40,6 +40,27 @@ async def start_creation(message: Message, state: FSMContext):
             parse_mode="Markdown"
         )
         await state.set_state(CreateGiveawayForm.input_channel_manually)
+
+@admin_router.message(Command("channels"))
+async def cmd_manage_channels(message: Message):
+    user_channels = await get_user_channels(message.from_user.id)
+    
+    if not user_channels:
+        await message.answer(
+            "📋 **Ваш список каналов пуст.**\n\n"
+            "Вы можете добавить канал, чтобы быстро выбирать его при создании розыгрышей.",
+            parse_mode="Markdown",
+            reply_markup=get_manage_channels_keyboard([])
+        )
+        return
+
+    await message.answer(
+        "📋 **Управление сохраненными каналами**\n\n"
+        "Выберите канал для настройки или удалите устаревший:",
+        parse_mode="Markdown",
+        reply_markup=get_manage_channels_keyboard(user_channels)
+    )
+
 
 @admin_router.callback_query(CreateGiveawayForm.select_channel, F.data.startswith("select_channel:"))
 async def on_channel_selected(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -241,3 +262,98 @@ async def callback_finish(callback: CallbackQuery, bot: Bot):
             pass
 
     await callback.answer("Итоги успешно подведены!", show_alert=True)
+
+# --- Управление каналами ---
+
+@admin_router.callback_query(F.data == "back_to_channels")
+async def back_to_channels_handler(callback: CallbackQuery):
+    user_channels = await get_user_channels(callback.from_user.id)
+    await callback.message.edit_text(
+        "📋 <b>Управление сохраненными каналами</b>\n\n"
+        "Выберите канал для настройки или удалите устаревший:",
+        parse_mode="HTML",
+        reply_markup=get_manage_channels_keyboard(user_channels)
+    )
+
+# --- КАРТОЧКА КАНАЛА ---
+
+@admin_router.callback_query(F.data.startswith("manage_ch:"))
+async def on_channel_detail_click(callback: CallbackQuery, bot: Bot):
+    channel_id = callback.data.split(":")[1]
+    
+    # Проверяем актуальный статус бота в канале
+    try:
+        chat = await bot.get_chat(channel_id)
+        member = await bot.get_chat_member(chat.id, bot.id)
+        status_str = "✅ Бот является администратором" if member.status in ("administrator", "creator") else "⚠️ У бота нет прав администратора!"
+        
+        # Обновляем название канала в БД на случай, если его переименовали
+        await save_channel(callback.from_user.id, channel_id, chat.title)
+        title = chat.title
+    except Exception:
+        status_str = "❌ Канал недоступен или бот был удален из него"
+        title = channel_id
+
+    await callback.message.edit_text(
+        f"📢 **Канал:** {title}\n"
+        f"**ID/Username:** `{channel_id}`\n"
+        f"**Статус:** {status_str}",
+        parse_mode="Markdown",
+        reply_markup=get_channel_detail_keyboard(channel_id)
+    )
+
+# --- УДАЛЕНИЕ КАНАЛА ИЗ БАЗЫ ---
+
+@admin_router.callback_query(F.data.startswith("delete_ch:"))
+async def on_delete_channel_click(callback: CallbackQuery):
+    channel_id = callback.data.split(":")[1]
+    
+    await delete_channel(callback.from_user.id, channel_id)
+    await callback.answer("🗑 Канал удален из вашего списка!", show_alert=True)
+    
+    # Возвращаем пользователя к обновленному списку
+    user_channels = await get_user_channels(callback.from_user.id)
+    await callback.message.edit_text(
+        "📋 **Управление сохраненными каналами**\n\n"
+        "Канал успешно удален. Выберите канал из списка:",
+        parse_mode="Markdown",
+        reply_markup=get_manage_channels_keyboard(user_channels)
+    )
+
+# --- ДОБАВЛЕНИЕ КАНАЛА ЧЕРЕЗ МЕНЮ УПРАВЛЕНИЯ ---
+
+@admin_router.callback_query(F.data == "add_new_channel_manage")
+async def on_add_channel_manage_click(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "➕ **Добавление канала**\n\n"
+        "Отправьте @username или ID канала (например, `@my_test_channel` или `-100123456789`).\n"
+        "⚠️ *Предварительно добавьте бота в канал как администратора!*",
+        parse_mode="Markdown"
+    )
+    await state.set_state(ChannelManageFS.waiting_for_channel)
+
+@admin_router.message(ChannelManageFS.waiting_for_channel)
+async def process_add_channel_manage(message: Message, state: FSMContext, bot: Bot):
+    channel_input = message.text.strip()
+    
+    try:
+        chat = await bot.get_chat(channel_input)
+        member = await bot.get_chat_member(chat.id, bot.id)
+        
+        if member.status not in ("administrator", "creator"):
+            await message.answer("❌ Бот не является администратором в этом канале! Добавьте его и попробуйте снова.")
+            return
+
+        ch_id = chat.id if chat.username is None else f"@{chat.username}"
+        await save_channel(message.from_user.id, str(ch_id), chat.title)
+        await state.clear()
+        
+        user_channels = await get_user_channels(message.from_user.id)
+        await message.answer(
+            f"✅ Канал **{chat.title}** успешно сохранен!\n\n"
+            f"📋 **Управление сохраненными каналами:**",
+            parse_mode="Markdown",
+            reply_markup=get_manage_channels_keyboard(user_channels)
+        )
+    except Exception:
+        await message.answer("❌ Не удалось найти канал. Проверьте правильность написания и наличие бота в канале.")
