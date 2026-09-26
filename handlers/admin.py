@@ -6,7 +6,8 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from database import create_giveaway, get_giveaway, get_participants, close_giveaway
+from database import create_giveaway, get_giveaway, get_participants, close_giveaway, get_user_channels, save_channel
+from keyboards import get_channels_keyboard
 from states import CreateGiveawayForm
 
 admin_router = Router()
@@ -21,15 +22,44 @@ def get_management_keyboard(giveaway_id: str) -> InlineKeyboardMarkup:
 
 @admin_router.message(Command("create_giveaway_test"))
 async def start_creation(message: Message, state: FSMContext):
-    await state.set_state(CreateGiveawayForm.select_channel)
-    await message.answer(
-        "🛠 **Мастер создания розыгрыша**\n\n"
-        "Шаг 1: Отправьте **@username** или **ID** вашего канала (например, `@my_test_channel` или `-100123456789`).\n"
-        "⚠️ *Убедитесь, что бот предварительно добавлен в этот канал администратором!*",
-        parse_mode="Markdown"
-    )
+    user_channels = await get_user_channels(message.from_user.id)
 
-@admin_router.message(CreateGiveawayForm.select_channel)
+    if user_channels:
+        await message.answer(
+            "🛠 **Мастер создания розыгрыша**\n\n"
+            "Выберите канал из списка сохраненных или добавьте новый:",
+            parse_mode="Markdown",
+            reply_markup=get_channels_keyboard(user_channels)
+        )
+        await state.set_state(CreateGiveawayForm.select_channel)
+    else:
+        await message.answer(
+            "🛠 **Мастер создания розыгрыша**\n\n"
+            "Шаг 1: Отправьте **@username** или **ID** вашего канала (например, `@my_test_channel` или `-100123456789`).\n"
+            "⚠️ *Убедитесь, что бот предварительно добавлен в этот канал администратором!*",
+            parse_mode="Markdown"
+        )
+        await state.set_state(CreateGiveawayForm.input_channel_manually)
+
+@admin_router.callback_query(CreateGiveawayForm.select_channel, F.data.startswith("select_channel:"))
+async def on_channel_selected(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    channel_id = callback.data.split(":")[1]
+    
+    # Проверяем, доступен ли канал до сих пор
+    try:
+        chat = await bot.get_chat(channel_id)
+        await state.update_data(channel_id=chat.id, channel_title=chat.title)
+        
+        await callback.message.edit_text(
+            f"✅ Канал **{chat.title}** выбран!\n\n"
+            f"Шаг 2: Введите **название розыгрыша**:",
+            parse_mode="Markdown"
+        )
+        await state.set_state(GiveawayFS.title)
+    except TelegramBadRequest:
+        await callback.answer("❌ Бот был удален из этого канала или нет прав!", show_alert=True)
+
+@admin_router.message(CreateGiveawayForm.input_channel_manually)
 async def process_channel(message: Message, state: FSMContext, bot: Bot):
     channel_id = message.text.strip()
     
@@ -40,6 +70,12 @@ async def process_channel(message: Message, state: FSMContext, bot: Bot):
         if bot_member.status not in ["administrator", "creator"]:
             await message.answer("❌ Бот находится в канале, но не имеет прав администратора. Выдайте права админа и попробуйте снова.", parse_mode="Markdown")
             return
+        # Сохраняем канал в базу данных для этого пользователя
+        await save_channel(
+            user_id=message.from_user.id,
+            channel_id=str(chat.id if chat.username is None else f"@{chat.username}"),
+            title=chat.title
+        )
     except TelegramBadRequest:
         await message.answer("❌ Не удалось найти канал или бот в него не добавлен. Проверьте адрес и повторите ввод:", parse_mode="Markdown")
         return

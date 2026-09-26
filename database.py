@@ -5,6 +5,16 @@ from config import DB_PATH
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
+        # Таблица сохраненных каналов пользователя
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS channels (
+                user_id INTEGER,
+                channel_id TEXT,
+                title TEXT,
+                PRIMARY KEY (user_id, channel_id)
+            )
+        """)
+
         # Таблица розыгрышей (id сделан TEXT для сохранения hex-строк)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS giveaways (
@@ -34,6 +44,38 @@ async def init_db():
 def generate_hex_id() -> str:
     """Генерация уникального 12-значного HEX ID"""
     return secrets.token_hex(6)
+
+# --- ФУНКЦИИ ДЛЯ РАБОТЫ С КАНАЛАМИ ---
+
+async def save_channel(user_id: int, channel_id: str, title: str):
+    """Сохранение или обновление названия канала для пользователя"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO channels (user_id, channel_id, title) 
+               VALUES (?, ?, ?)
+               ON CONFLICT(user_id, channel_id) DO UPDATE SET title=excluded.title""",
+            (user_id, str(channel_id), title)
+        )
+        await db.commit()
+
+async def get_user_channels(user_id: int) -> list[dict]:
+    """Получение списка сохраненных каналов пользователя"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT channel_id, title FROM channels WHERE user_id = ?",
+            (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [{"channel_id": row[0], "title": row[1]} for row in rows]
+
+async def delete_channel(user_id: int, channel_id: str):
+    """Удаление канала из списка пользователя"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM channels WHERE user_id = ? AND channel_id = ?",
+            (user_id, str(channel_id))
+        )
+        await db.commit()
 
 async def create_giveaway(creator_id: int, title: str, channel_id: str, winners_count: int, end_time: str) -> str:
     giveaway_id = generate_hex_id()
